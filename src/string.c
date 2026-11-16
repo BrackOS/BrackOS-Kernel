@@ -35,16 +35,22 @@ char *strchr(const char *s, int c) {
 }
 
 void *memcpy(void *dst, const void *src, size_t n) {
-    unsigned char *d = dst;
-    const unsigned char *s = src;
-    while (n--) *d++ = *s++;
-    return dst;
+    void *result = dst;
+    __asm__ volatile("cld; rep movsb"
+                     : "+D"(dst), "+S"(src), "+c"(n)
+                     :
+                     : "memory");
+    return result;
 }
 
 void *memset(void *dst, int c, size_t n) {
-    unsigned char *d = dst;
-    while (n--) *d++ = (unsigned char)c;
-    return dst;
+    void *result = dst;
+    unsigned char value = (unsigned char)c;
+    __asm__ volatile("cld; rep stosb"
+                     : "+D"(dst), "+c"(n)
+                     : "a"(value)
+                     : "memory");
+    return result;
 }
 
 int memcmp(const void *a, const void *b, size_t n) {

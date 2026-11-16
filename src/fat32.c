@@ -300,12 +300,13 @@ uint32_t fat32_get_free_cluster(void) {
     uint32_t start = fat32_fs.next_free_hint;
     if (start < 2 || start >= n + 2) start = 2;
 
+    uint32_t cluster = start;
     for (uint32_t i = 0; i < n; i++) {
-        uint32_t cluster = 2 + (start - 2 + i) % n;
         if (fat32_get_next_cluster(cluster) == FAT_FREE) {
             fat32_fs.next_free_hint = cluster + 1;
             return cluster;
         }
+        cluster = (cluster == n + 1) ? 2 : cluster + 1;
     }
     return FAT_NO_CLUSTER;
 }
@@ -470,16 +471,19 @@ int fat32_read_file(uint32_t dir_cluster, const char *name, uint8_t *buf, uint32
     uint32_t first = ((uint32_t)e.first_cluster_high << 16) | e.first_cluster_low;
     uint32_t limit = (e.file_size < cap) ? e.file_size : cap;
     uint32_t done = 0;
+    uint32_t remaining = limit;
     uint32_t cluster = first;
     uint8_t tmp[SECTOR_SIZE];
 
-    while (cluster >= 2 && cluster < FAT_EOC_MIN && done < limit) {
-        for (uint32_t s = 0; s < fat32_fs.boot.sectors_per_cluster && done < limit; s++) {
+    while (cluster >= 2 && cluster < FAT_EOC_MIN && remaining > 0) {
+        for (uint32_t s = 0; s < fat32_fs.boot.sectors_per_cluster && remaining > 0; s++) {
             if (fat32_read_sector(cluster_to_sector(cluster) + s, tmp) != 0) return -1;
-            for (uint32_t i = 0; i < SECTOR_SIZE && done < limit; i++) {
-                buf[done++] = tmp[i];
-            }
+            uint32_t chunk = remaining < SECTOR_SIZE ? remaining : SECTOR_SIZE;
+            memcpy(buf + done, tmp, chunk);
+            done += chunk;
+            remaining -= chunk;
         }
+        if (remaining == 0) break;
         cluster = fat32_get_next_cluster(cluster);
     }
     return (int)done;
@@ -501,10 +505,10 @@ int fat32_write_file(uint32_t dir_cluster, const char *name,
     }
 
     /* Build the new cluster chain and write the data */
-    uint32_t first = 0, prev = 0, done = 0;
+    uint32_t first = 0, prev = 0, remaining = size;
     uint32_t spc = fat32_fs.boot.sectors_per_cluster;
 
-    while (done < size) {
+    while (remaining > 0) {
         uint32_t c = fat32_get_free_cluster();
         if (c == FAT_NO_CLUSTER) return -1;   /* disk full */
         if (fat32_allocate_cluster(prev, c) != 0) return -1;
@@ -512,13 +516,15 @@ int fat32_write_file(uint32_t dir_cluster, const char *name,
 
         for (uint32_t s = 0; s < spc; s++) {
             uint8_t buf[SECTOR_SIZE];
-            for (uint32_t i = 0; i < SECTOR_SIZE; i++) {
-                uint32_t pos = done + s * SECTOR_SIZE + i;
-                buf[i] = (pos < size) ? data[pos] : 0;
+            uint32_t chunk = remaining < SECTOR_SIZE ? remaining : SECTOR_SIZE;
+            if (chunk > 0) {
+                memcpy(buf, data, chunk);
+                data += chunk;
+                remaining -= chunk;
             }
+            if (chunk < SECTOR_SIZE) memset(buf + chunk, 0, SECTOR_SIZE - chunk);
             if (fat32_write_sector(cluster_to_sector(c) + s, buf) != 0) return -1;
         }
-        done += spc * SECTOR_SIZE;
         prev = c;
     }
 
